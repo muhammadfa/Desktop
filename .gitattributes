@@ -1,17 +1,483 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+INPUT SIGNAL GENERATION
 
-# Custom for Visual Studio
-*.cs     diff=csharp
+function [y] = InputSignal(N);
 
-# Standard to msysgit
-*.doc	 diff=astextplain
-*.DOC	 diff=astextplain
-*.docx diff=astextplain
-*.DOCX diff=astextplain
-*.dot  diff=astextplain
-*.DOT  diff=astextplain
-*.pdf  diff=astextplain
-*.PDF	 diff=astextplain
-*.rtf	 diff=astextplain
-*.RTF	 diff=astextplain
+% This function generates the message sequence of length (N)
+% consisting of binary numbers.
+
+%Inputs: N - The length of message sequence
+%Outputs: y - The resulting message sequence
+
+y = floor(2*rand(1 , N));
+
+PN GENERATION
+
+function [y] = PNGen(Zin, N);
+
+% This function generates the Pseudo Noise sequence of length (N)
+%  according to input state.
+
+%  Inputs: Zin - Initial state of Shift register
+%  N - The length of PN sequence
+% Outputs: y - The resulting PN sequence    
+
+L = length(Zin);
+Z = Zin;  		                   %Initialize input state of shift register
+y = zeros(1, N);
+for i=1:N
+   y(i) = Z(L);
+   FirstBit = xor(Z(L), Z(L-1));        %XOR of the last two bits of shift register
+   Z = [FirstBit, Z(1:L-1)];           %Result saved in 1st bit and remaining bits shifted 
+end   
+
+SPREADING
+
+function [y] = Spreading(x);
+
+%This function spreads the input message sequence 
+%consisting of binary numbers using PN code.
+
+%Inputs: x - The input message sequence
+%Outputs: y - The resulting message sequence
+
+L = length(x);
+InitialState = [1 0 0 1 0 0];
+PNCode = PNGen(InitialState, 8);
+y = zeros(1, 8*L);
+for i=1:L
+    DataBit = x(i)*(ones(1, 8));            	   %Data bit repeated eight times      
+    y(8*(i-1)+1:8*i) = xor(PNCode, DataBit);  %Resulting 8*L bits saved in y 
+end    
+
+BPSK MODULATION
+
+function [y] = BPSK(x);
+
+%This function converts the spreaded 0/1's
+% to -1/+1's.
+
+%Inputs: x - The input spreaded sequence
+%Outputs: y - The resulting BPSK sequence
+
+L=length(x);
+y = zeros(1,length(x));
+for i=1:L;
+    if x(i)>0
+        y(i) = 1;
+    else
+        y(i) = -1;
+    end
+end   
+RAISED COSINE FUNCTION
+
+function [y] = RaisedCosine(x);
+
+%This function assigns to each +1/-1 of BPSK,
+%25 Raised Cosine pulse shaping bits.
+
+%Inputs: x - The input BPSK sequence
+%Outputs: y - The resulting Raised Cosine sequence
+
+BpskData = x;
+Length = length(x);
+R = 5;           			 % Preparing 25 Raised Cosine bits to be assigned  
+L = 25;
+L_2 = floor(L/2);
+n = [-L_2:L_2];
+B = 0.7;
+PRC = sinc(n/R).*(cos(pi*B*n/R)./(1-(2*B*n/R).^2));
+PRC = PRC/sqrt(sum(PRC.^2));     %25 Raised Cosine bits to be assigned to +1 of BPSK
+NRC = -1*PRC;               	         %25 Raised Cosine bits to be assigned to -1 of BPSK
+for i=1:Length;
+    if(BpskData(i) == 1)
+        for j=1:25;
+           RaisedCosine(i,j) = PRC(j);
+        end   
+    else
+        for j=1:25;
+           RaisedCosine(i,j) = NRC(j);
+        end   
+    end
+end
+
+newLength = 25*Length;         		% New length of Raised Cosine Signal 
+RaisedCosine = transpose(RaisedCosine);
+RaisedCosine = reshape(RaisedCosine, 1, newLength);
+y = RaisedCosine;
+
+RAYLEIGH CHANNEL
+
+function [y]= RayleighChannel(x,Multipath,SNR);
+
+%This function adds to the transmitted signals noise
+%according to SNR and multipath effect.
+
+%Inputs: x - The input Transmitted Signal
+%Multipath - It is an array. e.g.If you want
+%3 multipaths added enter Multipath=[1 0 0.5 0.2];
+%If you don’t want any noise enter SNR>300 
+%Outputs: y - The resulting Delayed & Multipath added
+%Signal
+
+if SNR < 300,
+	SigPow = std(x);		%Find the signal power by Standard Deviation
+	NoiseFac = 10^(0-(SNR/20));
+	x = x+randn(1, length(x))*SigPow*NoiseFac;          %Adding random noise 
+end
+
+if ~isempty(Multipath)
+	y = filter(Multipath, 1, x);		%Add Multipath to the signal
+else
+           y = x;
+end
+
+TRIM
+
+function [y] = trim(x, startBit);
+
+%This auxiliary function converts the input signal in packets of 8
+%bits starting from 8*(startBit-1).
+
+%Inputs: x - The input long sequence
+%startBit - If u need bits from 9 to 16 enter startBit=2 
+%Outputs: y - The resulting 8 bit sequence 
+
+y = zeros(1,8);                                           %Initialize Output
+startBit = startBit-1;
+startBit = 8*startBit+1;
+inc = 1;
+
+for i=startBit:startBit+7;
+    y(inc) = x(i);
+    inc = inc+1;
+end    
+
+DERAISED COSINE
+
+function [y] = DeRaisedCosine(x);
+
+%This function removes the raised cosine effect.
+
+%Inputs: x - The Received Signal from channel
+%Outputs: y - The BPSK retrieved signal 
+
+Length = length(x)/25;
+y = zeros(1,Length);
+sum = 0; outputBits = 1;
+for i=1:Length; 	  
+    i = 25*(i-2)+26;        %Increase value of i by 25 each time. 
+    for j=i:i+24;               % Each 25 bits added to check whether they were +1/-1 before
+        sum = sum+x(j);   % transmission.
+    end   
+    y(outputBits) = sum;                   %Result of sum stored in y.
+    sum = 0; outputBits = outputBits+1;
+end
+
+for i=1:Length;              %Make decision about +1/-1.
+    if y(i)>0
+        y(i) = 1;
+    else
+        y(i) = -1;
+    end
+end
+
+DBPSK
+
+function [y] = DBPSK(x);
+%This function converts the received & spreaded +1/-1's
+%to 1/0's.
+
+%Inputs: x - The input BPSK sequence
+%Outputs: y - The resulting PN spreaded sequence 
+
+y = zeros(1,length(x));
+for i=1:length(x)
+    if x(i)>0
+        y(i) = 1;
+    else
+        y(i) = 0;
+    end
+end   
+
+DESPREADING
+
+function [y] = Despreading(x);
+
+%This function removes the Spreading effect by first taking
+%XOR of received signal with same PN Code with which it
+%was spreaded on transmitter side. Then it retrieves the final
+%output by adding the result of XOR 
+
+%Inputs: x - The BPSK retrieved Signal
+%Outputs: y – Final output data signal 
+
+x = DBPSK(x);
+L = length(x);
+I = [1 0 0 1 0 0];
+T = PNGen(I,8);  	   %Same PN Code as on transmission side
+temp = zeros(1,8);
+for i=1:L/8;        	  %De-spreading Step-1:XOR of PN code with received signal  
+    C = trim(x,i);           %Get 8 successive bits starting from 8*i  
+     if i==1
+        A(i:i+7)=xor(T,C);
+    else
+        A(8*(i-1)+1:8*i)=xor(T,C);     %Store the result of XOR in A
+    end    
+end
+
+V=0;
+for i=1:L/8; 	              %Despreading Step-2:Coming back to original size 
+    C = trim(A,i);
+    for j=1:8;
+
+        V=V+C(j);
+    end
+    y(i)=V;
+    V=0;
+end
+
+for i=1:L/8;           	  %Decision step for output data bits
+    if y(i)>0
+        y(i)= 1;
+    else
+        y(i)=0;
+    end
+end   
+
+FLAT FADING CHANNEL
+
+function [y]= FlatFadingChannel(x, Delay, SNR);
+
+%This function adds to the transmitted signals noise and delay
+%according to given SNR.
+
+%Inputs: x - The input Transmitted Signal
+%Delay - It is an integer input. e.g.If you want delay
+%by 3 bits enter Delay=3.
+%If u do not want any noise enter SNR>300 
+%Output: y - The resulting Delayed & Noise added Signal 
+
+L = length(x);
+if SNR < 300,
+    SigPow = std(x);		     %Find the signal power by Standard Mean Deviation
+    NoiseFac = 10^(0-(SNR/20));
+    x = x+randn(1,L)*SigPow*NoiseFac;   %Add noise to the signal 
+end
+
+if Delay>0                                 %Add delay to the signal
+    x = reshape(x, L, 1);
+    for i=1:Delay;    	%Each delay is adding 25 bits of 0 in start and delaying remaining  
+        for i=1:25;         %bits while last 25 bits are lost
+            x = [0; x(1:L-1)];
+        end    
+    end
+    y = reshape(x,1,L);
+
+else
+    y = x;
+end    
+
+DELAY ESTIMATION
+
+function [y] = DelayEstimation(x);
+
+%This auxiliary function estimates the delay introduced by channel
+%in the transmitted signal using PN Code's delayed  versions.
+
+%Inputs: x - The input channel delayed sequence
+%Outputs: y - The Estimated Delay 
+
+I = [1 0 0 1 0 0];   		%Initial state of PN shift registers same as Spreaded Signal
+PNCode = PNGen(I,8);
+first8Bits = trim(x,1);  	 %First 8 bits of delayed received signal
+T1 = reshape(PNCode,8,1);
+T2 = reshape(PNCode,8,1);
+first8Bits = reshape(first8Bits,8,1);
+
+for i=1:8;
+    temp1 = sum(xor(T1,first8Bits)); 	   %temp1 checks correlation if first data bit is 1
+    temp2 = sum(xor(T2,first8Bits));  	  %temp2 checks correlation if first data bit is 0
+    if(i<7)
+        if(temp1>6);
+            break;
+        end
+    else
+        if(temp1>5);
+            break;
+        end
+    end
+    if(temp2<1);
+        break;
+    end    
+    T1 = [xor(T1(7),T1(8)) ; T1(1:7)]; %Add XOR of last 2 bits in start and shift all
+    T2 = [0 ; T2(1:7)]; 			   %Add 0 in start and shift remaining bits forward 
+end
+y = i-1;
+
+RAKE RECEIVER
+
+function [y] = RakeReceiver(F1, F2, F3);
+
+%This function simulates a Rake Receiver with three fingers
+%each locking onto a different delayed received signal. Each
+%finger calculates the delay introduced by channel and then 
+%delays PN code accordingly. Then despreading is done in 
+%each finger. Finally result of each finger is combined 
+%according to its weight and output is formed.    
+
+%Inputs: F1, F2, F3 - The input channel delayed sequence to each finger 
+%Outputs: y - The Final Output. 
+
+x1 = DBPSK(F1); 			  %1st Finger Input Data
+x2 = DBPSK(F2); 			  %2nd Finger Input Data
+x3 = DBPSK(F3);  			  %3rd Finger Input Data
+L = length(x1);
+D1 = DelayEstimation(x1);
+D2 = DelayEstimation(x2);
+D3 = DelayEstimation(x3);
+I = [1 0 0 1 0 0];
+PNCode = PNGen(I, 8);
+PNCode = reshape(PNCode, 8, 1);
+T1 = PNCode; T2 = PNCode; T3 = PNCode;
+
+for i=1:D1;     			 %1st Finger PN Sequence delayed according to D1
+    C = xor(T1(7), T1(8));  
+    T1 = [C; T1(1:7)];
+end
+T1 = reshape(T1, 1, 8);        
+
+for i=1:D2;         		 %2nd Finger PN Sequence delayed according to D2
+    C = xor(T2(7), T2(8));
+    T2 = [C; T2(1:7)];
+end
+T2 = reshape(T2, 1, 8);
+
+for i=1:D3;           		 %3rd Finger PN Sequence delayed according to D3
+    C = xor(T3(7), T3(8));
+    T3 = [C; T3(1:7)];
+end
+T3 = reshape(T3, 1, 8);
+
+for i=1:L/8;         		  %1st Finger Despreading Step-1:XOR of delayed   
+    C = trim(x1, i); 		  %PN code with received signal
+     if i==1
+        A1(i:i+7) = xor(T1, C);
+    else
+        A1(8*(i-1)+1:8*i) = xor(T1, C); 
+    end    
+end
+
+for i=1:L/8;        		 %2nd Finger Despreading Step-1:XOR of delayed   
+    C = trim(x2, i);  		 %PN code with received signal
+     if i==1
+        A2(i:i+7) = xor(T2, C);
+    else
+        A2(8*(i-1)+1:8*i) = xor(T2, C); 
+    end    
+end
+
+for i=1:L/8;        	             %3rd Finger Despreading Step-1:XOR of delayed     
+    C = trim(x3, i);         	  %PN code with received signal
+     if i==1
+        A3(i:i+7) = xor(T3, C);
+    else
+        A3(8*(i-1)+1:8*i) = xor(T3, C); 
+    end    
+end
+V=0;
+
+for i=1:L/8;       	       %1st Finger Despreading Step-2:Coming back to original size        
+    C = trim(A1, i);
+    for j=1:8;
+        V=V+C(j);
+    end
+    y1(i)=V;
+    V=0;
+end
+
+for i=1:L/8;     		   %2nd Finger Despreading Step-2:Coming back to original size    
+    C = trim(A2, i);
+    for j=1:8;
+        V=V+C(j);
+    end
+    y2(i)=V;
+    V=0;
+end
+
+for i=1:L/8;      	   %3rd Finger Despreading Step-2:Coming back to original size    
+    C = trim(A3, i);
+    for j=1:8;
+        V=V+C(j);
+    end
+    y3(i)=V;
+    V=0;
+end
+
+y = y1+y2+y3;  	   %All the weighted signals coming from different fingers are 
+for i=1:L/8;      	   %added and output is decided.
+    if y(i)<12
+        y(i) = 0;
+    else
+        y(i) = 1;
+    end
+end   
+
+SIMULATION AND RESULTS
+
+
+EbNo = [-2 : 0.5 : 6.5]; 
+ErrorsB = []; ErrorsR = []; NN = []; RR = [];
+N = 184;
+
+for i=1:length(EbNo)    
+%---------------------------------------- Transmission Side -------------------------------        
+    TxData = InputSignal(N);             
+    PNCodedSgn = Spreading(TxData);
+    modulatedSgn = BPSK(PNCodedSgn);
+    TxSgn = RaisedCosine(modulatedSgn);
+
+%---------------------------------------- Multipath Channel -------------------------------- 
+
+    multipath = [1 0.9 0.7 0.5 0 0.2];
+    RxSgn = RayleighChannel(TxSgn, multipath, EbNo(i));
+
+%---------------------------------------- Flat fading Channel --------------------------------    
+   
+    %Delay of 1 to 6 bits being randomly introduced each time by channel
+    RxSgn1 = FlatFadingChannel(TxSgn, randint(1,1,[1,5]), EbNo(i)); 
+
+    RxSgn2 = FlatFadingChannel(TxSgn, randint(1,1,[1,5]), EbNo(i));
+    RxSgn3 = FlatFadingChannel(TxSgn, randint(1,1,[1,6]), EbNo(i));    
+    
+%---------------------------------------- Receiver Side -----------------------------------    
+    
+    deModSgn1 = DeRaisedCosine(RxSgn1);
+    deModSgn2 = DeRaisedCosine(RxSgn2);
+    deModSgn3 = DeRaisedCosine(RxSgn3);
+    deModulatedSgn = DeRaisedCosine(RxSgn);
+    RxData = Despreading(deModulatedSgn);
+    bitErr = sum(xor(RxData, TxData)); 
+    ErrorsB = [ErrorsB; bitErr];
+    NN = [NN; N*i];    
+    RxDataWithRake = RakeReceiver(deModSgn1,deModSgn2,deModSgn3);
+    bitErr = sum(xor(RxDataWithRake, TxData));
+    ErrorsR = [ErrorsR; bitErr];
+    RR = [RR; N*i];
+end
+
+%---------------------------------------- Calculation of Error's probability ------------------------
+
+PerrR = ErrorsR./RR;
+PerrB = ErrorsB./NN;
+Pbpsk= 1/2*erfc(sqrt(10.^(EbNo/10)));
+
+%---------------------------------------- Show simulation Results ------------------------------
+figure; 
+semilogy(EbNo(1:length(PerrB)), PerrB, 'r-o'); hold on; 
+semilogy(EbNo(1:length(PerrR)), PerrR, 'b-o'); hold on;
+semilogy(EbNo, Pbpsk, 'g-.x'); xlabel('Eb/No (dB)'); ylabel('BER'); grid on;
+title('BER Vs Eb/No Curve of CDMA System');
+legend('Bit Error Prob. without Rake Receiver', 'Bit Error Prob. with Rake Receiver', 'Bit Error Prob. of BPSK');
+
+
+
